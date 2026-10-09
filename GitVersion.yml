@@ -3,7 +3,7 @@
 # Sin ninguna etiqueta, la primera version es next-version.
 next-version: 0.1.0
 workflow: GitHubFlow/v1
-tag-prefix: '[vV]'
+tag-prefix: '[vV]?'
 mode: ContinuousDeployment
 branches:
   main:
