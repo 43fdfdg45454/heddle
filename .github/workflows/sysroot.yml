@@ -1,0 +1,77 @@
+name: sysroot
+# Exporta las cabeceras y las bibliotecas-stub del NDK como artefacto, para generar la tabla de firmas de la frontera
+# (tools/sigtool) en entornos sin acceso directo al NDK. Solo se ejecuta a mano.
+on:
+  workflow_dispatch:
+
+# Solo lectura por defecto (tambien en pull_request, donde se ejecuta build.rs y el codigo del PR); los jobs que
+# publican releases piden escritura.
+permissions:
+  contents: read
+
+jobs:
+  export:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Empaquetar sysroot del NDK
+        run: |
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          S="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr"
+          echo "NDK: $(basename "$NDK")"
+          cat "$NDK/source.properties" || true
+          mkdir -p out/lib
+          cp -r "$S/include" out/include
+          for a in aarch64-linux-android x86_64-linux-android; do
+            API="$(ls "$S/lib/$a" | grep -E '^[0-9]+$' | sort -n | tail -n1)"
+            mkdir -p "out/lib/$a"
+            cp "$S/lib/$a/$API"/*.so "out/lib/$a/"
+            echo "$API" > "out/lib/$a/API"
+          done
+          cp "$NDK/source.properties" out/ || true
+          # Registro de Vulkan (vk.xml) de la misma version que las cabeceras del NDK: tools/sigtool lee de el que
+          # estructura puede ir en la cadena pNext de cual (`structextends`) y la cuenta de cada arreglo (`len`); las
+          # cabeceras en C no lo dicen. Licencia Apache-2.0 OR MIT (The Khronos Group), en su propia cabecera.
+          H="$S/include/vulkan/vulkan_core.h"
+          VV="$(sed -n 's/^#define VK_HEADER_VERSION \([0-9][0-9]*\).*/\1/p' "$H")"
+          VM="$(sed -n 's/^#define VK_HEADER_VERSION_COMPLETE VK_MAKE_API_VERSION(0, *\([0-9]*\), *\([0-9]*\),.*/\1.\2/p' "$H")"
+          if [ -z "$VV" ] || [ -z "$VM" ]; then echo "::error::no se encontro la version de las cabeceras de Vulkan"; exit 1; fi
+          mkdir -p out/share/vulkan/registry
+          curl -fsSL -o out/share/vulkan/registry/vk.xml "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Headers/v$VM.$VV/registry/vk.xml"
+          grep -q "VK_HEADER_VERSION</name> $VV" out/share/vulkan/registry/vk.xml || { echo "::error::vk.xml no es de la version $VM.$VV"; exit 1; }
+          # biblioteca auxiliar del compilador (aritmetica de 128 bits, etc.) para compilar la biblioteca guest
+          B="$(find "$NDK/toolchains/llvm/prebuilt/linux-x86_64/lib/clang" -name 'libclang_rt.builtins-aarch64-android.a' | head -n1)"
+          mkdir -p out/rt && cp "$B" out/rt/
+          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version | head -n1 > out/rt/CLANG
+          # Avisos de licencia: el contenido es del NDK de Android (AOSP y LLVM), no de heddle
+          mkdir -p out/licenses
+          for n in "$NDK/NOTICE" "$NDK/NOTICE.toolchain" "$NDK/toolchains/llvm/prebuilt/linux-x86_64/NOTICE" \
+                   "$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/NOTICE"; do
+            [ -f "$n" ] && cp "$n" "out/licenses/$(echo "${n#$NDK/}" | tr / _)"
+          done
+          if [ -z "$(ls out/licenses)" ]; then echo "::error::el NDK no trae archivos NOTICE"; exit 1; fi
+          {
+            echo "Contenido copiado del Android NDK $(grep Pkg.Revision "$NDK/source.properties" | cut -d= -f2 | tr -d ' ')"
+            echo "(Android Open Source Project y LLVM): cabeceras de bionic y de las APIs del NDK, bibliotecas-stub"
+            echo "y libclang_rt.builtins (LLVM compiler-rt, Apache-2.0 WITH LLVM-exception). share/vulkan/registry/vk.xml es"
+            echo "el registro de Vulkan de Khronos (Vulkan-Headers, Apache-2.0 OR MIT) de la misma version que las cabeceras."
+            echo "Se redistribuye sin cambios como entrada de tools/sigtool y de guest/build.sh; no es parte de heddle"
+            echo "ni esta cubierto por su licencia. Los avisos de licencia originales estan en licenses/."
+          } > out/NOTICE
+          tar czf ndk-sysroot.tar.gz -C out .
+          ls -la ndk-sysroot.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ndk-sysroot
+          path: ndk-sysroot.tar.gz
+          retention-days: 7
+      # Tambien como asset de una prerelease fija (nunca "latest"): los artefactos no son descargables desde todos los entornos
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ndk-sysroot
+          name: Cabeceras del NDK (entrada de tools/sigtool)
+          body: Cabeceras y bibliotecas-stub del NDK usadas para generar la tabla de firmas. No es una version de heddle.
+          prerelease: true
+          make_latest: false
+          files: ndk-sysroot.tar.gz

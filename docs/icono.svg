@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <title>heddle</title>
+  <defs>
+    <linearGradient id="fondo" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3a1c5c"/>
+      <stop offset="1" stop-color="#8a2d4f"/>
+    </linearGradient>
+    <linearGradient id="hilo" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7ee8c7"/>
+      <stop offset="0.5" stop-color="#ffd166"/>
+      <stop offset="1" stop-color="#ff8c61"/>
+    </linearGradient>
+    <linearGradient id="metal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f4f1fb"/>
+      <stop offset="1" stop-color="#c9c0dd"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="url(#fondo)"/>
+  <rect x="8.5" y="8.5" width="111" height="111" rx="27.5" fill="none" stroke="#ffffff" stroke-opacity="0.12"/>
+  <!-- barras del marco del lizo -->
+  <rect x="22" y="22" width="84" height="7" rx="3.5" fill="url(#metal)"/>
+  <rect x="22" y="99" width="84" height="7" rx="3.5" fill="url(#metal)"/>
+  <!-- mallas (heddles) laterales -->
+  <g stroke="#e4def2" stroke-width="3" stroke-linecap="round" opacity="0.55">
+    <line x1="38" y1="29" x2="38" y2="99"/>
+    <line x1="90" y1="29" x2="90" y2="99"/>
+  </g>
+  <!-- malla central con su ojo -->
+  <g stroke="#e4def2" stroke-width="4" stroke-linecap="round" fill="none">
+    <line x1="64" y1="29" x2="64" y2="50"/>
+    <line x1="64" y1="78" x2="64" y2="99"/>
+    <path d="M64 50 C54 54 54 74 64 78 C74 74 74 54 64 50 Z"/>
+  </g>
+  <!-- el hilo entra por la izquierda (arm64, cuadrado) y sale por la derecha (x86-64, redondo) -->
+  <path d="M16 70 C34 70 42 58 64 64 C86 70 94 58 112 58" fill="none" stroke="url(#hilo)" stroke-width="5" stroke-linecap="round"/>
+  <rect x="13" y="65" width="10" height="10" rx="2" fill="#7ee8c7"/>
+  <circle cx="112" cy="58" r="5.5" fill="#ff8c61"/>
+</svg>

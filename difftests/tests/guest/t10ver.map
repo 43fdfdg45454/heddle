@@ -1,0 +1,2 @@
+T10_1 { global: t10_ver_1; };
+T10_2 { global: t10_ver_2; } T10_1;

@@ -1,0 +1,2 @@
+LIBC { global: malloc; };
+LIBC_N { } LIBC;

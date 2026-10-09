@@ -1,0 +1,11 @@
+[package]
+name = "sigtool"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["43fdfdg45454"]
+repository = "https://github.com/43fdfdg45454/heddle-new"
+description = "Genera la tabla de firmas de la frontera host/guest de heddle a partir de las cabeceras del NDK"
+
+# herramienta independiente: no forma parte del paquete del puente
+[workspace]

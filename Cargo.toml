@@ -1,0 +1,35 @@
+[package]
+name = "heddle"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["43fdfdg45454"]
+repository = "https://github.com/43fdfdg45454/heddle-new"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "heddle-run"
+path = "src/bin/heddle-run.rs"
+
+[[bin]]
+name = "heddle-difftest"
+path = "src/bin/heddle-difftest.rs"
+
+# Sin panic = "abort" en release/dev: las pruebas se compilan siempre con unwind, y si el perfil fija abort cargo
+# compila la biblioteca dos veces en el mismo `cargo test` (abort para los binarios, unwind para el arnes) con el mismo
+# nombre de archivo (libheddle.rlib, libheddle.so): una compilacion pisaba a la otra al azar (cargo#6313).
+[profile.release]
+opt-level = 3
+debug = 1
+
+# Lo que se publica (CI: `cargo build --profile dist`): como release y con panic = "abort", como siempre. Sale en
+# target/dist/ (target/<triple>/dist/ con --target).
+[profile.dist]
+inherits = "release"
+panic = "abort"
+
+[[bin]]
+name = "heddle-fpone"
+path = "src/bin/heddle-fpone.rs"

@@ -1,0 +1,373 @@
+name: build
+# Un unico pipeline: linux y android compilan y prueban en paralelo, difftests prueba los binarios de linux y
+# publicar crea el release solo si todo paso. Funciona desde un repositorio vacio (no depende de otros flujos ni
+# de otros repositorios, salvo el espejo de bionic para la biblioteca guest).
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+# Solo lectura por defecto (tambien en pull_request, donde se ejecuta build.rs y el codigo del PR); los jobs que
+# publican releases piden escritura.
+permissions:
+  contents: read
+
+jobs:
+  # semver: la version de este pipeline la calcula GitVersion (GitVersion.yml) a partir de las etiquetas vX.Y.Z y la
+  # historia; linux y android la incrustan (HEDDLE_VERSION) y release la publica.
+  semver:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.gv.outputs.semVer }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gittools/actions/gitversion/setup@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
+        with:
+          versionSpec: '6.8.2'
+      - id: gv
+        uses: gittools/actions/gitversion/execute@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
+      - run: 'echo "Version: ${{ steps.gv.outputs.semVer }} (${{ steps.gv.outputs.fullSemVer }})"'
+
+  linux:
+    needs: semver
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: mkdir -p logs
+      # Version de la release (job semver, GitVersion): se incrusta en el binario y en el registro de carga
+      - name: Version
+        env:
+          V: v${{ needs.semver.outputs.version }}
+        run: |
+          echo "HEDDLE_VERSION=$V" >> "$GITHUB_ENV"
+          echo "Version: $V"
+      # Biblioteca guest (ARM64): lo que no se puede reenviar al host (long double y complejos de libm; strtold,
+      # wcstold y las conversiones %L de printf/scanf de libc), compilado de la libm y la libc de bionic. Se incrusta
+      # en libheddle.so (build.rs).
+      # La biblioteca guest depende solo de guest/, de la tabla de firmas y del NDK de la imagen del runner: se guarda
+      # en la cache y linux y android la comparten (compilarla, clonando bionic, cuesta ~20-30 s).
+      - name: Cache de la biblioteca guest
+        id: guestcache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: guest/out/libheddle_guest.so
+          key: guest-${{ runner.os }}-${{ env.ImageVersion }}-${{ hashFiles('guest/**', 'src/sigs_gen.rs') }}
+      - name: Compilar la biblioteca guest
+        if: steps.guestcache.outputs.cache-hit != 'true'
+        run: |
+          exec > >(tee -a logs/linux.log) 2>&1
+          git clone -q --filter=blob:none --sparse https://github.com/aosp-mirror/platform_bionic /tmp/bionic
+          git -C /tmp/bionic checkout -q "$(cat guest/BIONIC_COMMIT)"
+          git -C /tmp/bionic sparse-checkout set libm libc/include libc/private libc/platform libc/async_safe libc/stdio libc/upstream-openbsd
+          mkdir -p guest/out
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}" guest/build.sh /tmp/bionic guest/out/libheddle_guest.so
+      - name: Compilar
+        run: |
+          exec > >(tee -a logs/linux.log) 2>&1
+          # lo publicado: perfil dist (release con panic = "abort"); las pruebas compilan el suyo (release)
+          cargo build --profile dist
+      # Lints de clippy de correccion (deny por defecto; p. ej. not_unsafe_ptr_arg_deref): fallan el pipeline.
+      - name: Clippy
+        run: |
+          exec > >(tee -a logs/linux.log) 2>&1
+          rustup component add clippy
+          cargo clippy --all-targets -- -D clippy::correctness
+      # Pruebas unitarias + lint de arquitectura (frontera de punteros y memoria): si fallan no se publica nada.
+      # En paralelo (las que tocan estado global del proceso corren en un proceso hijo; antes un solo hilo: ~84 s).
+      - name: Pruebas
+        env:
+          HEDDLE_REQUIRE_GUEST: "1"
+        run: |
+          exec > >(tee -a logs/linux.log) 2>&1
+          cargo test --release --lib --bins --test arch_lint --test cli
+      - name: Empaquetar
+        run: |
+          mkdir -p dist
+          cp target/dist/heddle-run target/dist/heddle-difftest target/dist/libheddle.so cpu-features dist/
+          # LICENSE, NOTICE, aviso de la libm de bionic (biblioteca guest incrustada) y de la biblioteca estandar de Rust
+          tools/licencias.sh dist /tmp/bionic
+          tar czf heddle-linux-x86_64.tar.gz -C dist .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pkg-linux
+          path: heddle-linux-x86_64.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: logs-linux
+          path: logs/
+          if-no-files-found: ignore
+
+  android:
+    needs: semver
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: mkdir -p logs && rustup target add x86_64-linux-android
+      # Version de la release (job semver, GitVersion): se incrusta en el binario y en el registro de carga
+      - name: Version
+        env:
+          V: v${{ needs.semver.outputs.version }}
+        run: |
+          echo "HEDDLE_VERSION=$V" >> "$GITHUB_ENV"
+          echo "Version: $V"
+      # Biblioteca guest (ARM64): igual que en linux.
+      # La biblioteca guest depende solo de guest/, de la tabla de firmas y del NDK de la imagen del runner: se guarda
+      # en la cache y linux y android la comparten (compilarla, clonando bionic, cuesta ~20-30 s).
+      - name: Cache de la biblioteca guest
+        id: guestcache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: guest/out/libheddle_guest.so
+          key: guest-${{ runner.os }}-${{ env.ImageVersion }}-${{ hashFiles('guest/**', 'src/sigs_gen.rs') }}
+      - name: Compilar la biblioteca guest
+        if: steps.guestcache.outputs.cache-hit != 'true'
+        run: |
+          exec > >(tee -a logs/android.log) 2>&1
+          git clone -q --filter=blob:none --sparse https://github.com/aosp-mirror/platform_bionic /tmp/bionic
+          git -C /tmp/bionic checkout -q "$(cat guest/BIONIC_COMMIT)"
+          git -C /tmp/bionic sparse-checkout set libm libc/include libc/private libc/platform libc/async_safe libc/stdio libc/upstream-openbsd
+          mkdir -p guest/out
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}" guest/build.sh /tmp/bionic guest/out/libheddle_guest.so
+      - name: Build
+        run: |
+          exec > >(tee -a logs/android.log) 2>&1
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android26-clang"
+          export CC_x86_64_linux_android="$CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER"
+          cargo build --profile dist --target x86_64-linux-android --lib
+          mkdir -p dist
+          cp target/x86_64-linux-android/dist/libheddle.so dist/libheddle.so
+          cp cpu-features dist/
+      - name: Verificar simbolos contra bionic
+        run: |
+          set -o pipefail
+          exec > >(tee -a logs/android.log) 2>&1
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          LLVM="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+          SYSLIB="$LLVM/sysroot/usr/lib/x86_64-linux-android"
+          API="$(ls "$SYSLIB" | grep -E '^[0-9]+$' | sort -n | tail -n1)"
+          echo "Comparando contra bionic API $API"
+          RE="$LLVM/bin/llvm-readelf"
+          "$RE" --dyn-syms --wide dist/libheddle.so | awk '$7=="UND" && $8!="" && $5!="WEAK"{print $8}' | sed 's/@.*//' | sort -u > undef.txt
+          for l in libc.so libm.so libdl.so liblog.so; do
+            "$RE" --dyn-syms --wide "$SYSLIB/$API/$l" | awk '$7!="UND" && $8!=""{print $8}' | sed 's/@.*//'
+          done | sort -u > defined.txt
+          echo "indefinidos=$(wc -l < undef.txt) definidos_en_bionic=$(wc -l < defined.txt)"
+          if [ "$(wc -l < defined.txt)" -lt 500 ]; then
+            echo "::error::La lista de simbolos de bionic parece vacia o incompleta; el chequeo no es fiable"; exit 1
+          fi
+          comm -23 undef.txt defined.txt > missing.txt
+          echo "Simbolos sin resolver:"; cat missing.txt
+          if [ -s missing.txt ]; then
+            echo "::error::Simbolos que bionic no exporta: $(tr '\n' ' ' < missing.txt)"
+            exit 1
+          fi
+          # el simbolo que exige Android para un native bridge
+          "$RE" --dyn-syms --wide dist/libheddle.so | grep -w NativeBridgeItf
+      # La tabla de firmas debe coincidir con la que genera tools/sigtool para el mismo NDK (no bloquea: el NDK del
+      # runner puede ser mas nuevo que el usado para generar la tabla; en ese caso solo avisa). Hasta que el paso
+      # corra entero en el runner con el glob de libclang corregido, sigue con continue-on-error.
+      - name: Verificar la tabla de firmas
+        continue-on-error: true
+        run: |
+          exec > >(tee -a logs/android.log) 2>&1
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          S="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr"
+          REV="$(grep Pkg.Revision "$NDK/source.properties" | cut -d= -f2 | tr -d ' ')"
+          WANT="$(grep NDK_REVISION src/sigs_gen.rs | cut -d'"' -f2)"
+          if [ "$REV" != "$WANT" ]; then echo "::warning::tabla generada con el NDK $WANT; el runner tiene $REV: no se compara"; exit 0; fi
+          # libclang-N.so.N (no libclang-cpp, que tambien casaba con libclang-*.so.* y hacia fallar el enlace de sigtool)
+          LC="$(ls /usr/lib/llvm-*/lib/libclang-[0-9]*.so.[0-9]* 2>/dev/null | sort -V | tail -n1)"
+          if [ -z "$LC" ]; then echo "::warning::sin libclang en el runner: no se compara"; exit 0; fi
+          mkdir -p sr/lib && cp -r "$S/include" sr/include && cp "$NDK/source.properties" sr/
+          for a in aarch64-linux-android x86_64-linux-android; do
+            API="$(ls "$S/lib/$a" | grep -E '^[0-9]+$' | sort -n | tail -n1)"; mkdir -p "sr/lib/$a"; cp "$S/lib/$a/$API"/*.so "sr/lib/$a/"; echo "$API" > "sr/lib/$a/API"
+          done
+          (cd tools/sigtool && SIGTOOL_LIBCLANG="$LC" cargo build --release)
+          export PATH="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          SIGTOOL_RESOURCE_INCLUDE="$(clang -print-resource-dir)/include" SIGTOOL_EXTRA="$PWD/tools/sigtool/extra.h" tools/sigtool/target/release/sigtool sr /tmp/sigs_gen.rs /tmp/firmas.md
+          if diff -q /tmp/sigs_gen.rs src/sigs_gen.rs >/dev/null; then echo "tabla de firmas al dia"; else echo "::warning::src/sigs_gen.rs no coincide con la salida de tools/sigtool"; diff /tmp/sigs_gen.rs src/sigs_gen.rs | head -n 40; fi
+      - name: Empaquetar
+        run: |
+          tools/licencias.sh dist /tmp/bionic
+          tar czf heddle-android-x86_64.tar.gz -C dist .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pkg-android
+          path: heddle-android-x86_64.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: logs-android
+          path: logs/
+          if-no-files-found: ignore
+
+  # Pruebas guest (C compilado a aarch64 con clang), ART simulado y utilidades host, sobre los binarios que
+  # publicara el release.
+  difftests:
+    needs: linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # mesa-vulkan-drivers: lavapipe (Vulkan por software) para tvk
+      - run: mkdir -p logs && sudo apt-get update && sudo apt-get install -y clang lld libvulkan1 mesa-vulkan-drivers
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pkg-linux
+      - name: Preparar target/release con los binarios del paquete
+        run: |
+          mkdir -p target/release
+          tar xzf heddle-linux-x86_64.tar.gz -C target/release
+          chmod +x target/release/heddle-run target/release/heddle-difftest
+      - name: Compilar y ejecutar las pruebas guest
+        run: |
+          exec > >(tee -a logs/difftests.log) 2>&1
+          cd difftests
+          scripts/build-tests.sh
+          # el paquete trae la biblioteca guest: tld (long double en stdio) no se puede omitir; tvk (Vulkan) tampoco
+          HEDDLE_REQUIRE_GUEST=1 HEDDLE_REQUIRE_VULKAN=1 scripts/run-all.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: logs-difftests
+          path: logs/
+          if-no-files-found: ignore
+
+  # Diferencial contra Unicorn (oraculo ARM64) sobre el heddle-difftest del paquete, en paralelo a difftests y
+  # android. Semillas fijas: el resultado es reproducible (difftests/README.md, "Diferencial contra Unicorn").
+  # Falla si hay una discrepancia que no esta en la lista de exclusiones de tools/gen_cases.py. ~4 min.
+  unicorn:
+    needs: linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      UNICORN_VERSION: "2.1.4"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: mkdir -p logs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pkg-linux
+      - name: Preparar target/release con los binarios del paquete
+        run: |
+          mkdir -p target/release
+          tar xzf heddle-linux-x86_64.tar.gz -C target/release
+          chmod +x target/release/heddle-difftest
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/pip
+          key: pip-unicorn-${{ runner.os }}-${{ env.UNICORN_VERSION }}
+      - name: Instalar Unicorn
+        run: |
+          python3 -m venv difftests/deps/venv
+          difftests/deps/venv/bin/pip install "unicorn==$UNICORN_VERSION"
+      # Todas las clases (incluidos fallos en guardas, exclusivos y SIGBUS por alineacion) y otra pasada de FP con
+      # FZ/FZ16 y valores cerca del underflow; los dos motores (JIT e interprete).
+      - name: Diferencial
+        run: |
+          exec > >(tee -a logs/unicorn.log) 2>&1
+          cd difftests
+          scripts/difftest.sh 20000 1 todas | grep -v '^\[heddle\]'
+          scripts/difftest.sh 10000 2 fp_dp1,fp_cmp,fp_ccmp,fp_dp2,fp_dp3,fp_conv,fp_fixed,simd_3same,simd_2misc,simd_h3same,simd_h2misc,simd_fhm3,simd_fhm3b,simd_sh3same,simd_sh2misc,simd_s2misc,fp_cvth | grep -v '^\[heddle\]'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: logs-unicorn
+          path: logs/
+          if-no-files-found: ignore
+
+  release:
+    # Publica un release en cada push (a main o a una etiqueta v*) solo si todo paso.
+    # Version: la de GitVersion (job semver; una etiqueta vX.Y.Z empujada da esa misma).
+    needs: [semver, linux, android, difftests, unicorn]
+    if: ${{ github.event_name == 'push' }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: pkg-*
+          path: art
+      # La version es la que calculo el job semver y va incrustada en los binarios. Si otro pipeline publico esa
+      # etiqueta entre medias (dos push seguidos), se falla en lugar de publicar binarios con otra version.
+      - name: Version y sumas
+        id: v
+        env:
+          VERSION: ${{ needs.semver.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then echo "::error::version no valida para publicar: '$VERSION'"; exit 1; fi
+          case "$GITHUB_REF" in
+            refs/tags/v*) ;;
+            *)
+              if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+                echo "::error::la etiqueta $tag ya existe (otro pipeline la publico); los binarios llevan esa version"; exit 1
+              fi ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Version: $tag"
+          ls -laR art
+          cp art/pkg-linux/heddle-linux-x86_64.tar.gz art/pkg-android/heddle-android-x86_64.tar.gz .
+          sha256sum heddle-linux-x86_64.tar.gz heddle-android-x86_64.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ steps.v.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: heddle ${{ steps.v.outputs.tag }}
+          body: |
+            Build automatico del commit ${{ github.sha }}.
+            Android x86_64: libheddle.so con los simbolos verificados contra bionic.
+            Linux x86_64: heddle-run, heddle-difftest y libheddle.so.
+            En los dos, cpu-features: las extensiones que implementa heddle (nombres de la linea Features de /proc/cpuinfo).
+            Nunca probado en Android real ni en hardware ARM: es una prueba de integracion en curso.
+            Sumas sha256 en SHA256SUMS; cambios en CHANGELOG.md; licencias en LICENSES/ dentro de cada paquete.
+          make_latest: true
+          files: |
+            heddle-linux-x86_64.tar.gz
+            heddle-android-x86_64.tar.gz
+            SHA256SUMS
+
+  # Registros de todas las tareas en el release "ci" (prerelease fija), para poder leerlos sin sesion ni API.
+  registro:
+    needs: [linux, android, difftests, unicorn]
+    if: ${{ always() && github.event_name == 'push' }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: logs-*
+          path: art
+      - name: Publicar registros
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir -p todo && cp -r art/. todo/ 2>/dev/null || true
+          {
+            echo "commit=${{ github.sha }}"
+            echo "linux=${{ needs.linux.result }}"
+            echo "android=${{ needs.android.result }}"
+            echo "difftests=${{ needs.difftests.result }}"
+            echo "unicorn=${{ needs.unicorn.result }}"
+          } | tee todo/resumen.txt
+          # solo el final de cada registro si fuera enorme
+          for f in $(find todo -name '*.log'); do tail -n 400 "$f" > "$f.tail" && mv "$f.tail" "$f"; done
+          tar -czf resultados.tar.gz -C todo .
+          gh release delete ci --yes --cleanup-tag 2>/dev/null || true
+          gh release create ci resultados.tar.gz todo/resumen.txt --prerelease --latest=false --title "Registros del ultimo pipeline" --notes "Registros de $GITHUB_SHA"

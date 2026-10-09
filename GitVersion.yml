@@ -1,0 +1,11 @@
+# Version semantica que calcula GitVersion (build.yml, job semver): en main, la ultima etiqueta vX.Y.Z mas un parche;
+# "+semver: minor" o "+semver: major" en un mensaje de commit sube la menor o la mayor. En otras ramas, X.Y.Z-rama.N.
+# Sin ninguna etiqueta, la primera version es next-version.
+next-version: 0.1.0
+workflow: GitHubFlow/v1
+tag-prefix: '[vV]'
+mode: ContinuousDeployment
+branches:
+  main:
+    label: ''
+    increment: Patch

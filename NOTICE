@@ -1,0 +1,71 @@
+heddle
+Copyright (c) 2026 43fdfdg45454
+Licencia MIT (ver LICENSE).
+
+Este archivo enumera el codigo de terceros que contiene el codigo fuente de heddle o que va incrustado en los
+binarios publicados (libheddle.so, heddle-run, heddle-difftest). Los paquetes de cada release traen los textos
+completos en LICENSES/.
+
+1. qsort (src/libc_hle.rs)
+   Traduccion a Rust de libc/stdlib/qsort.c de FreeBSD (el que usa bionic en
+   libc/upstream-freebsd/lib/libc/stdlib/qsort.c).
+   Copyright (c) 1992, 1993 The Regents of the University of California. All rights reserved.
+   Licencia BSD-3-Clause; aviso completo al final de este archivo.
+
+2. Biblioteca guest (guest/, incrustada en libheddle.so por src/guestlib.rs cuando se compila con ella)
+   Funciones de libm (long double de 128 bits y complejos) compiladas de la libm de bionic (Android Open Source
+   Project) en el commit de guest/BIONIC_COMMIT. Incluye codigo de FreeBSD msun (Sun Microsystems/fdlibm, The
+   Regents of the University of California, y otros autores), NetBSD y AOSP, bajo licencias BSD-2-Clause,
+   BSD-3-Clause, ISC, Apache-2.0 y avisos de tipo fdlibm. Los avisos completos estan en el archivo libm/NOTICE de
+   bionic, que el CI copia como LICENSES/bionic-libm-NOTICE.
+   Conversion texto <-> long double de la libc de bionic en el mismo commit: gdtoa (Lucent Technologies, aviso
+   propio de tipo permisivo; hdtoa.c de David Schultz, BSD-2-Clause; via OpenBSD), stdio/vfprintf.cpp,
+   stdio/printf_common.h, stdio/parsefloat.c y fvwrite.c (The Regents of the University of California,
+   BSD-3-Clause), y guest/stdio_ld.cpp, que replica envoltorios de bionic (strtold.cpp, stdlib_l.cpp, wcstod.cpp,
+   vsnprintf de stdio.cpp; Android Open Source Project, BSD-2-Clause).
+   Avisos completos: libc/NOTICE de bionic, que el CI copia como LICENSES/bionic-libc-NOTICE.
+   Se enlaza con libclang_rt.builtins del NDK (LLVM compiler-rt, Apache-2.0 WITH LLVM-exception; la excepcion
+   LLVM exime de reproducir el aviso en binarios; se incluye igualmente en LICENSES/rust-std/licenses/).
+
+3. Biblioteca estandar de Rust (core, alloc, std), enlazada estaticamente en todos los binarios
+   MIT OR Apache-2.0, con componentes de terceros. Avisos: LICENSES/rust-std/COPYRIGHT-library.html y
+   LICENSES/rust-std/licenses/ (copiados del toolchain con el que se compilo la release).
+
+4. Extracto del registro de Vulkan (tools/sigtool/vk_extracto.xml; no va en los binarios)
+   Parte de vk.xml de Vulkan-Headers 1.3.275 (estructuras, sus `structextends` y `len`, y los parametros de los
+   comandos), que tools/sigtool usa para generar src/sigs_gen.rs. Copyright 2015-2024 The Khronos Group Inc.
+   Licencia Apache-2.0 OR MIT (se usa bajo MIT); el aviso va en la cabecera del propio archivo.
+
+heddle no tiene otras dependencias de crates.io.
+
+Unicorn y QEMU se usan solo como oraculos en las pruebas diferenciales (difftests/); no se distribuyen.
+
+----------------------------------------------------------------------------------------------------
+Aviso de FreeBSD qsort.c (punto 1)
+
+Copyright (c) 1992, 1993
+	The Regents of the University of California.  All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+3. Neither the name of the University nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.
